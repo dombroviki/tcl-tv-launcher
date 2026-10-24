@@ -1,0 +1,16 @@
+# сборка
+kinoteatr-launcher/build/
+*.idsig
+
+# ключ подписи — только локально: им подписываются обновления лаунчера
+*.keystore
+
+# резервные копии конкретных телевизоров
+tv-setup/backups/
+tv-backup/
+
+# макет с логотипами чужих приложений (они не наши, не распространяем)
+design/
+
+# сборка (готовый APK лежит в tv-setup/)
+kinoteatr-launcher/kinoteatr.apk

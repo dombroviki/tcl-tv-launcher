@@ -1,0 +1,21 @@
+# Что setup.sh отключает (pm disable-user — обратимо, restore.sh включает обратно).
+# Пакеты, которых нет на телевизоре, просто пропускаются.
+# Строку можно закомментировать символом #, если что-то из этого нужно.
+
+# TCL: телеметрия, реклама, магазин
+com.tcl.healthinfo                  # сбор статистики
+com.tcl.tvweishi                    # «ТВ-страж», телеметрия
+com.tcl.usercenter                  # аккаунт TCL (прошивка может включить его обратно)
+com.tcl.esticker                    # наклейки демо-режима для магазина
+com.tcl.waterfall.overseas          # TCL Channel, рекламная лента
+com.tcl.appmarket2                  # магазин приложений TCL
+com.tcl.notereminder                # напоминалки (прошивка может включить обратно)
+com.tcl.copydatatotv                # перенос данных с телефона
+com.tcl.assistant                   # ассистент TCL
+
+# Google: рекомендации и ненужное на ТВ
+com.google.android.tvrecommendations   # рекламные ряды на главном экране
+com.google.android.videos              # Google Play Фильмы (сервис закрыт)
+com.google.android.play.games          # Play Игры
+com.google.android.feedback            # отправка отзывов
+com.android.printspooler               # печать
