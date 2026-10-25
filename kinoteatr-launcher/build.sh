@@ -17,7 +17,7 @@ rm -rf build && mkdir -p build/gen build/classes build/dex
 
 "$BT/aapt2" compile --dir res -o build/res.zip
 "$BT/aapt2" link -o build/base.apk -I "$AJ" --manifest AndroidManifest.xml build/res.zip \
-  -A assets --min-sdk-version 30 --target-sdk-version 30 --version-code 1 --version-name 1.0
+  -A assets --min-sdk-version 30 --target-sdk-version 30 --version-code 2 --version-name 1.0.1
 
 javac -nowarn -source 11 -target 11 -encoding UTF-8 -classpath "$AJ" -d build/classes \
   $(find src -name '*.java')
