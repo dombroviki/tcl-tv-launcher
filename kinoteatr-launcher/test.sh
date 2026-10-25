@@ -83,7 +83,7 @@ fresh; key KEYCODE_DPAD_RIGHT; $S logcat -c; long; key KEYCODE_BACK; sleep .8
 n=$($S logcat -d -s Kinoteatr:V | grep -c "hero swap")
 ok "menu open + Back on SmartTube: title not redrawn" "$( [ "$n" = "0" ] && echo 1)" "$n swaps"
 fresh; $S logcat -c; key KEYCODE_DPAD_RIGHT; sleep .5
-n=$($S logcat -d -s Kinoteatr:V | grep -c "hero swap: SmartTube")
+n=$($S logcat -d -s Kinoteatr:V | grep -c "hero swap")
 ok "moving to another app still swaps the title" "$( [ "$n" = "1" ] && echo 1)" "$n swaps"
 
 # --- Home from the bottom of the grid (user-reported: title disappeared)

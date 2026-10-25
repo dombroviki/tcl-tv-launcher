@@ -564,10 +564,7 @@ public class MainActivity extends Activity {
         }
         items.add(menuItem("О приложении", () -> start(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
                 android.net.Uri.parse("package:" + a.pkg)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), a.label)));
-        if ((a.info.applicationInfo.flags & ApplicationInfo.FLAG_SYSTEM) == 0) {
-            items.add(menuItem("Удалить", () -> start(new Intent(Intent.ACTION_DELETE,
-                    android.net.Uri.parse("package:" + a.pkg)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), a.label)));
-        }
+        // No "Удалить": the system app page opened by "О приложении" already has uninstall.
 
         // Explicit up/down chain so focus never has to be guessed, and it never leaves the panel.
         List<View> focusable = new ArrayList<>();
