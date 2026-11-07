@@ -38,15 +38,21 @@ done < "$B/disabled-by-setup.txt"
 
 echo "== Возвращаю настройки"
 while IFS='=' read -r k v; do
-  if [ "$v" = "null" ] || [ -z "$v" ]; then tv settings delete global "$k" >/dev/null
-  else tv settings put global "$k" "$v"; fi
+  ns=global
+  case "$k" in secure:*) ns=secure; k=${k#secure:} ;; esac
+  if [ "$v" = "null" ] || [ -z "$v" ]; then tv settings delete "$ns" "$k" >/dev/null
+  else tv settings put "$ns" "$k" "$v"; fi
   echo "  $k = $v"
 done < "$B/settings-before.txt"
 
 printf "Удалить лаунчер «Кинотеатр»? [y/N] "
 read -r answer
 case "$answer" in
-  y|Y|д|Д) "$ADB" -s "$TV" uninstall app.kinoteatr.launcher </dev/null | tr -d '\r' ;;
+  y|Y|д|Д)
+    # The launcher first gives up its screen-off right, otherwise Android refuses to uninstall it.
+    tv am start -n app.kinoteatr.launcher/.MainActivity --ez dropAdmin true >/dev/null 2>&1
+    sleep 1
+    "$ADB" -s "$TV" uninstall app.kinoteatr.launcher </dev/null | tr -d '\r' ;;
   *) if grep -q 'launcher' "$B/disabled-by-setup.txt"; then
        echo "Оставляю. Главным экраном снова будет системный лаунчер."
      else

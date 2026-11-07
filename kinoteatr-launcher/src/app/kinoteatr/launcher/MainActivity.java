@@ -189,7 +189,7 @@ public class MainActivity extends Activity {
     public void onBackPressed() { /* home has nowhere to go back to */ }
 
     private final BroadcastReceiver timeReceiver = new BroadcastReceiver() {
-        @Override public void onReceive(Context c, Intent i) { tickClock(); }
+        @Override public void onReceive(Context c, Intent i) { tickClock(); updateTimerButton(); }
     };
 
     private final BroadcastReceiver packageReceiver = new BroadcastReceiver() {
@@ -228,13 +228,7 @@ public class MainActivity extends Activity {
         ambient = new AmbientView(this);
         root.addView(ambient, new FrameLayout.LayoutParams(-1, -1));
 
-        View shade = new View(this);
-        GradientDrawable left = new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
-                new int[]{0x8c000000, 0x1f000000, 0x00000000});
-        GradientDrawable bottom = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
-                new int[]{0x00000000, 0x00000000, 0x4d000000, 0xd1000000});
-        shade.setBackground(new LayerDrawable(new Drawable[]{left, bottom}));
-        root.addView(shade, new FrameLayout.LayoutParams(-1, -1));
+        // No shade layer: the backdrop is near-black already.
 
         // status pills, top right
         ShadowLayout statusS = new ShadowLayout(this);
@@ -821,16 +815,44 @@ public class MainActivity extends Activity {
 
     // ---------------------------------------------------------------- inputs
 
+    private static final int MOON = 0xffc9b8ff, MOON_DARK = 0xff5b3df5, DARK = 0xff0b0c10;
+    private LinearLayout inputsInner;
+    private android.widget.HorizontalScrollView inputsScroll;
+    private LinearLayout timerBtn;
+    private TextView timerText;
+
+    /**
+     * Source row: inputs on the left (names and hidden flags come from the TV's own input menu),
+     * then two round buttons pinned to the right edge — sleep timer and settings.
+     * If there are more inputs than fit, the inputs scroll sideways with focus.
+     */
     private void rebuildInputs() {
         String keep = focusedKey;
         inputs.removeAllViews();
         inputs.addView(label("Источники"), new LinearLayout.LayoutParams(-2, -2));
+
+        inputsScroll = new android.widget.HorizontalScrollView(this);
+        inputsScroll.setHorizontalScrollBarEnabled(false);
+        inputsScroll.setClipToPadding(false);
+        // Room above and below so the focused pill's zoom and shadow aren't cut by the scroll view.
+        int pad = px(34);
+        inputsScroll.setPadding(px(14), pad, px(14), pad);
+        ShadowLayout inner = new ShadowLayout(this);
+        inner.shadowAll(pillShadow());
+        inner.setGravity(Gravity.CENTER_VERTICAL);
+        inputsInner = inner;
+        inputsScroll.addView(inner, new FrameLayout.LayoutParams(-2, -2));
+        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(0, -2, 1f);
+        slp.leftMargin = px(22);
+        slp.topMargin = slp.bottomMargin = -pad;
+        inputs.addView(inputsScroll, slp);
 
         TvInputManager tim = (TvInputManager) getSystemService(Context.TV_INPUT_SERVICE);
         List<TvInputInfo> hdmi = new ArrayList<>();
         TvInputInfo tuner = null;
         if (tim != null) {
             for (TvInputInfo info : tim.getTvInputList()) {
+                if (info.isHidden(this)) continue; // hidden in the TV's own input menu
                 if (info.getType() == TvInputInfo.TYPE_HDMI && info.isPassthroughInput()) hdmi.add(info);
                 else if (info.getType() == TvInputInfo.TYPE_TUNER && tuner == null
                         && info.getServiceInfo().packageName.startsWith("com.tcl")) tuner = info;
@@ -838,67 +860,81 @@ public class MainActivity extends Activity {
         }
         // Hardware ids grow with the port number on this TV, so sorting by id gives HDMI 1, 2, 3, 4.
         hdmi.sort((x, y) -> x.getId().compareTo(y.getId()));
-        boolean first = true;
         // No "connected" badge: this TV reports the same state for every port and sees no CEC devices,
         // so any connected/disconnected hint would be a guess.
         for (final TvInputInfo info : hdmi) {
-            String port = String.valueOf(info.loadLabel(this));
-            CharSequence custom = info.loadCustomLabel(this);
-            final String name = TextUtils.isEmpty(custom) || port.contentEquals(custom) ? port : port + " · " + custom;
-            View v = source("⮕", name, null, () -> {
-                Intent i = new Intent(Intent.ACTION_VIEW, TvContract.buildChannelUriForPassthroughInput(info.getId()))
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                start(i, name);
-            }, name, "Нажмите OK, чтобы переключиться на этот вход.");
-            addSource(v, first);
-            first = false;
+            final String port = String.valueOf(info.loadLabel(this));
+            CharSequence c = info.loadCustomLabel(this);
+            final String custom = TextUtils.isEmpty(c) || port.contentEquals(c) ? null : String.valueOf(c);
+            addSource(source(custom != null ? custom : port, custom != null ? port : null, () -> switchInput(info),
+                    port, custom != null ? custom : port, "Нажмите OK, чтобы переключиться на этот вход."));
         }
-        Intent tv = getPackageManager().getLaunchIntentForPackage("com.tcl.tv");
-        if (tuner != null && tv != null) {
-            final Intent fTv = tv.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            addSource(source("◉", "Эфир", null, () -> start(fTv, "Эфир"), "Эфир", "Эфирные и кабельные каналы."), first);
-            first = false;
+        if (tuner != null) {
+            final TvInputInfo fTuner = tuner;
+            addSource(source("Эфир", null, () -> switchInput(fTuner), "Источник сигнала", "Эфир", "Эфирные и кабельные каналы."));
         }
-        View gear = source("⚙", "Настройки", null,
-                () -> start(new Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), "Настройки"),
-                "Настройки", "Изображение, звук, сеть и всё остальное.");
-        View spacer = new View(this);
-        inputs.addView(spacer, new LinearLayout.LayoutParams(0, 1, 1f));
-        inputs.addView(gear, new LinearLayout.LayoutParams(-2, -2));
-        pinEdges(inputs);
+        if (inputsInner.getChildCount() > 0) {
+            View first = inputsInner.getChildAt(0);
+            first.setNextFocusLeftId(first.getId()); // left on the first input stays put
+        }
 
-        if (keep != null && keep.startsWith("src:")) {
+        ShadowLayout util = new ShadowLayout(this);
+        util.shadowAll(new ShadowLayout.Spec(px(10), px(24), -px(8), .4f, px(32), true));
+        util.setGravity(Gravity.CENTER_VERTICAL);
+        timerBtn = roundButton(true, "Таймер сна", this::openTimerSheet);
+        timerBtn.setTag("util:timer");
+        timerText = text(24, INK, Typeface.NORMAL, "sans-serif-medium");
+        timerText.setFontFeatureSettings("tnum");
+        LinearLayout.LayoutParams ttp = new LinearLayout.LayoutParams(-2, -2);
+        ttp.leftMargin = px(10);
+        timerBtn.addView(timerText, ttp);
+        util.addView(timerBtn, new LinearLayout.LayoutParams(px(64), px(64)));
+        LinearLayout gear = roundButton(false, "Настройки",
+                () -> start(new Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), "Настройки"));
+        gear.setTag("util:settings");
+        LinearLayout.LayoutParams glp = new LinearLayout.LayoutParams(px(64), px(64));
+        glp.leftMargin = px(14);
+        util.addView(gear, glp);
+        gear.setNextFocusRightId(gear.getId());
+        LinearLayout.LayoutParams ulp = new LinearLayout.LayoutParams(-2, -2);
+        ulp.leftMargin = px(18);
+        inputs.addView(util, ulp);
+        updateTimerButton();
+
+        if (keep != null && (keep.startsWith("src:") || keep.startsWith("util:"))) {
             View t = inputs.findViewWithTag(keep);
             if (t != null) t.requestFocus();
         }
     }
 
-    private String inputLabel(TvInputInfo info) {
-        CharSequence c = info.loadCustomLabel(this);
-        if (TextUtils.isEmpty(c)) c = info.loadLabel(this);
-        return String.valueOf(c);
+    /** Resource id by name: the Gradle-free build doesn't generate R.java. */
+    private int drawable(String name) {
+        return getResources().getIdentifier(name, "drawable", getPackageName());
     }
 
-    private void addSource(View v, boolean first) {
+    private void addSource(View v) {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
-        lp.leftMargin = px(first ? 36 : 18);
-        inputs.addView(v, lp);
+        if (inputsInner.getChildCount() > 0) lp.leftMargin = px(16);
+        inputsInner.addView(v, lp);
     }
 
-    private View source(String glyph, final String name, String sub, final Runnable action,
-                        final String heroTitle, final String heroTag) {
+    /** Name in the normal size, the port (if any) smaller and dimmer on the same text baseline. */
+    private CharSequence sourceText(String name, String port, boolean focused) {
+        if (port == null) return name;
+        android.text.SpannableString sp = new android.text.SpannableString(name + "  " + port);
+        int from = name.length() + 2;
+        sp.setSpan(new android.text.style.RelativeSizeSpan(.71f), from, sp.length(), 0);
+        sp.setSpan(new android.text.style.ForegroundColorSpan(focused ? 0x800b0c10 : INK3), from, sp.length(), 0);
+        return sp;
+    }
+
+    private View source(final String name, final String port, final Runnable action,
+                        final String heroEyebrow, final String heroTitle, final String heroTag) {
         final TextView t = text(24, INK2, Typeface.NORMAL, "sans-serif");
-        t.setTag("src:" + name);
+        t.setTag("src:" + name + (port != null ? " " + port : ""));
         t.setId(View.generateViewId());
-        if (sub == null) {
-            t.setText(name);
-        } else {
-            // A green dot in front of inputs that have a device connected.
-            android.text.SpannableString sp = new android.text.SpannableString(sub + "  " + name);
-            sp.setSpan(new android.text.style.ForegroundColorSpan(0xff3ddc84), 0, sub.length(), 0);
-            t.setText(sp);
-        }
-        t.setPadding(px(26), px(16), px(26), px(16));
+        t.setText(sourceText(name, port, false));
+        t.setPadding(px(24), px(17), px(24), px(17));
         t.setFocusable(true);
         t.setClickable(true);
         final GradientDrawable idle = pill(0x14ffffff, 0x24ffffff, 18);
@@ -906,18 +942,295 @@ public class MainActivity extends Activity {
         t.setBackground(idle);
         t.setOnFocusChangeListener((v, has) -> {
             t.setBackground(has ? on : idle);
-            t.setTextColor(has ? 0xff0b0c10 : INK2);
-            v.animate().scaleX(has ? 1.08f : 1f).scaleY(has ? 1.08f : 1f).translationZ(has ? px(16) : 0)
-                    .setUpdateListener(x -> inputs.invalidate()).setDuration(180).start();
+            t.setTextColor(has ? DARK : INK2);
+            t.setText(sourceText(name, port, has));
+            v.animate().scaleX(has ? 1.06f : 1f).scaleY(has ? 1.06f : 1f).translationZ(has ? px(16) : 0)
+                    .setUpdateListener(x -> inputsInner.invalidate()).setDuration(180).start();
             if (has) {
-                focusedKey = "src:" + name;
-                setHero(name.equals("Настройки") ? "Система" : "Источник сигнала", heroTitle, heroTag);
+                focusedKey = (String) t.getTag();
+                setHero(heroEyebrow, heroTitle, heroTag);
                 ambient.setColors(INPUT_COLORS);
                 slideTo(1);
             }
         });
         t.setOnClickListener(v -> action.run());
         return t;
+    }
+
+    /**
+     * TCL's TV app ignores the standard passthrough URI and reopens the last input, so on TCL we
+     * name the input in its own "inputId" extra (verified on the C825: the active input really
+     * changes). Other TVs get the standard Android TV intent.
+     */
+    private void switchInput(TvInputInfo info) {
+        Intent tcl = new Intent().setClassName("com.tcl.tv", "com.tcl.tv.TVActivity")
+                .putExtra("inputId", info.getId())
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        if (tcl.resolveActivity(getPackageManager()) != null) {
+            start(tcl, String.valueOf(info.loadLabel(this)));
+            return;
+        }
+        Intent i = new Intent(Intent.ACTION_VIEW, TvContract.buildChannelUriForPassthroughInput(info.getId()))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        start(i, String.valueOf(info.loadLabel(this)));
+    }
+
+    /** Round 64×64 button with a stroke icon; grows into a pill only while it has a label. */
+    private LinearLayout roundButton(boolean moon, final String name, final Runnable action) {
+        final LinearLayout b = new LinearLayout(this);
+        b.setGravity(Gravity.CENTER);
+        b.setId(View.generateViewId());
+        b.setContentDescription(name);
+        b.setFocusable(true);
+        b.setClickable(true);
+        b.setPadding(px(18), 0, px(18), 0);
+        android.widget.ImageView iv = new android.widget.ImageView(this);
+        iv.setImageResource(drawable(moon ? "ic_moon" : "ic_gear"));
+        b.addView(iv, new LinearLayout.LayoutParams(px(28), px(28)));
+        styleRound(b, false);
+        b.setOnFocusChangeListener((v, has) -> {
+            styleRound(b, has);
+            v.animate().scaleX(has ? 1.06f : 1f).scaleY(has ? 1.06f : 1f).translationZ(has ? px(16) : 0)
+                    .setUpdateListener(x -> ((View) v.getParent()).invalidate()).setDuration(180).start();
+            if (has) {
+                focusedKey = (String) b.getTag();
+                if (b == timerBtn) setTimerHero();
+                else setHero("Система", name, "Изображение, звук, сеть и всё остальное.");
+                ambient.setColors(INPUT_COLORS);
+                slideTo(1);
+            }
+        });
+        b.setOnClickListener(v -> action.run());
+        return b;
+    }
+
+    /** Colours for all four combinations of focused × timer running (no white-on-white). */
+    private void styleRound(LinearLayout b, boolean focused) {
+        boolean active = b == timerBtn && SleepTimer.left(this) > 0;
+        int bg = focused ? 0xebffffff : 0x14ffffff;
+        int stroke = focused ? 0 : (active ? 0x73c9b8ff : 0x24ffffff);
+        b.setBackground(pill(bg, stroke, 32));
+        int icon = focused ? (active ? MOON_DARK : DARK) : (active ? MOON : INK2);
+        ((android.widget.ImageView) b.getChildAt(0)).setColorFilter(icon);
+        if (b.getChildCount() > 1) ((TextView) b.getChildAt(1)).setTextColor(focused ? DARK : INK);
+    }
+
+    private void updateTimerButton() {
+        if (timerBtn == null) return;
+        long left = SleepTimer.left(this);
+        boolean active = left > 0;
+        timerText.setText(active ? ((left + 59_999) / 60_000) + " мин" : "");
+        timerText.setVisibility(active ? View.VISIBLE : View.GONE);
+        // Exactly square while idle; a pill only while it shows the minutes left.
+        ViewGroup.LayoutParams lp = timerBtn.getLayoutParams();
+        if (lp != null) {
+            lp.width = active ? ViewGroup.LayoutParams.WRAP_CONTENT : px(64);
+            timerBtn.setLayoutParams(lp);
+        }
+        styleRound(timerBtn, timerBtn.hasFocus());
+        if (timerBtn.hasFocus()) setTimerHero();
+    }
+
+    private String hhmm(long wall) {
+        return new SimpleDateFormat("HH:mm", new Locale("ru")).format(new Date(wall));
+    }
+
+    private void setTimerHero() {
+        long left = SleepTimer.left(this);
+        if (left > 0) {
+            long min = (left + 59_999) / 60_000;
+            setHero("Таймер сна", "Сон в " + hhmm(SleepTimer.wallAt(this)),
+                    "Через " + min + " мин. OK — изменить или отменить.");
+        } else {
+            setHero("Система", "Таймер сна", "Выключить телевизор через 15 минут – 2 часа.");
+        }
+    }
+
+    // ---------------------------------------------------------------- sleep timer sheet
+
+    private static final int[] TIMER_MIN = {0, 15, 30, 45, 60, 90, 120};
+    private static final String[] TIMER_LABEL = {"Выкл", "15 мин", "30 мин", "45 мин", "1 час", "1,5 часа", "2 часа"};
+    private static final int REQ_ADMIN = 7;
+    private int pendingMinutes;
+
+    /** Side sheet from the right edge; the home screen stays visible on the left. */
+    private void openTimerSheet() {
+        closeMenu(false);
+        menuReturnTag = "util:timer";
+        menuLayer = new FrameLayout(this);
+        menuLayer.setClickable(true);
+        View dim = new View(this);
+        dim.setBackground(new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, new int[]{0x40000000, 0xb3000000}));
+        menuLayer.addView(dim, new FrameLayout.LayoutParams(-1, -1));
+
+        LinearLayout sheet = new LinearLayout(this);
+        sheet.setOrientation(LinearLayout.VERTICAL);
+        sheet.setPadding(px(64), px(72), px(64), 0);
+        sheet.setBackgroundColor(0xff14151c); // opaque: tiles must not show through the rows
+
+        LinearLayout eb = new LinearLayout(this);
+        eb.setGravity(Gravity.CENTER_VERTICAL);
+        android.widget.ImageView moon = new android.widget.ImageView(this);
+        moon.setImageResource(drawable("ic_moon"));
+        moon.setColorFilter(MOON);
+        eb.addView(moon, new LinearLayout.LayoutParams(px(24), px(24)));
+        TextView ebt = text(22, INK2, Typeface.NORMAL, "sans-serif-medium");
+        ebt.setLetterSpacing(.2f);
+        ebt.setAllCaps(true);
+        ebt.setText("Таймер сна");
+        LinearLayout.LayoutParams ebp = new LinearLayout.LayoutParams(-2, -2);
+        ebp.leftMargin = px(12);
+        eb.addView(ebt, ebp);
+        sheet.addView(eb);
+
+        TextView h = text(56, INK, Typeface.NORMAL, "sans-serif");
+        h.setTypeface(hTitle.getTypeface());
+        h.setText("Выключить через");
+        LinearLayout.LayoutParams hp = new LinearLayout.LayoutParams(-2, -2);
+        hp.topMargin = px(14);
+        hp.bottomMargin = px(22);
+        sheet.addView(h, hp);
+
+        sheet.addView(timerState(), new LinearLayout.LayoutParams(-1, -2));
+
+        int chosen = SleepTimer.chosenMinutes(this);
+        List<View> rows = new ArrayList<>();
+        View focusFirst = null;
+        for (int i = 0; i < TIMER_MIN.length; i++) {
+            final int m = TIMER_MIN[i];
+            View r = timerRow(TIMER_LABEL[i], m, m == chosen && m > 0);
+            LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(-1, px(70));
+            rp.topMargin = px(4);
+            sheet.addView(r, rp);
+            rows.add(r);
+            if (m == chosen) focusFirst = r;
+        }
+        if (focusFirst == null) focusFirst = rows.get(2); // "30 мин" when the current timer isn't one of the rows
+        for (int i = 0; i < rows.size(); i++) {
+            View v = rows.get(i);
+            v.setNextFocusLeftId(v.getId());
+            v.setNextFocusRightId(v.getId());
+            v.setNextFocusUpId(rows.get(Math.max(0, i - 1)).getId());
+            v.setNextFocusDownId(rows.get(Math.min(rows.size() - 1, i + 1)).getId());
+        }
+
+        menuLayer.addView(sheet, new FrameLayout.LayoutParams(px(640), -1, Gravity.END));
+        root.addView(menuLayer, new FrameLayout.LayoutParams(-1, -1));
+        sheet.setTranslationX(px(80));
+        menuLayer.setAlpha(0f);
+        menuLayer.animate().alpha(1f).setDuration(160).start();
+        sheet.animate().translationX(0).setDuration(220).setInterpolator(new DecelerateInterpolator(2f)).start();
+        if (focusFirst != null) focusFirst.requestFocus();
+        lower.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
+    }
+
+    /** "Выключится в 22:12 / осталось 25 мин из 45" with a countdown bar, or "Таймер не установлен". */
+    private View timerState() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(px(28), px(24), px(28), px(24));
+        long left = SleepTimer.left(this);
+        if (left <= 0) {
+            box.setBackground(pill(0x0dffffff, 0x1fffffff, 20));
+            TextView t = text(28, INK3, Typeface.NORMAL, "sans-serif");
+            t.setText("Таймер не установлен");
+            box.addView(t);
+        } else {
+            box.setBackground(pill(0x14c9b8ff, 0x38c9b8ff, 20));
+            int total = SleepTimer.chosenMinutes(this);
+            long min = (left + 59_999) / 60_000;
+            TextView main = text(30, INK2, Typeface.NORMAL, "sans-serif");
+            String at = hhmm(SleepTimer.wallAt(this));
+            android.text.SpannableString sp = new android.text.SpannableString("Выключится в " + at);
+            sp.setSpan(new android.text.style.ForegroundColorSpan(INK), sp.length() - at.length(), sp.length(), 0);
+            sp.setSpan(new android.text.style.StyleSpan(Typeface.BOLD), sp.length() - at.length(), sp.length(), 0);
+            main.setText(sp);
+            box.addView(main);
+            TextView sub = text(22, INK3, Typeface.NORMAL, "sans-serif");
+            sub.setText("осталось " + min + " мин из " + total);
+            LinearLayout.LayoutParams sbp = new LinearLayout.LayoutParams(-2, -2);
+            sbp.topMargin = px(8);
+            box.addView(sub, sbp);
+            FrameLayout bar = new FrameLayout(this);
+            bar.setBackground(pill(0x14ffffff, 0, 3));
+            View fill = new View(this);
+            fill.setBackground(pill(MOON, 0, 3));
+            float frac = total > 0 ? 1f - Math.min(1f, left / (total * 60_000f)) : 0f;
+            int barW = px(640 - 128 - 56);
+            bar.addView(fill, new FrameLayout.LayoutParams(Math.max(px(6), Math.round(barW * frac)), -1));
+            LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(barW, px(6));
+            bp.topMargin = px(18);
+            box.addView(bar, bp);
+        }
+        LinearLayout wrap = new LinearLayout(this);
+        wrap.setPadding(0, 0, 0, px(22));
+        wrap.addView(box, new LinearLayout.LayoutParams(-1, -2));
+        return wrap;
+    }
+
+    private View timerRow(String label, final int minutes, boolean current) {
+        final LinearLayout r = new LinearLayout(this);
+        r.setId(View.generateViewId());
+        r.setGravity(Gravity.CENTER_VERTICAL);
+        r.setPadding(px(28), 0, px(28), 0);
+        r.setFocusable(true);
+        r.setClickable(true);
+        final TextView v = text(34, INK, Typeface.NORMAL, "sans-serif-medium");
+        v.setText(label);
+        r.addView(v, new LinearLayout.LayoutParams(px(190), -2));
+        final TextView at = text(24, INK3, Typeface.NORMAL, "sans-serif");
+        at.setFontFeatureSettings("tnum");
+        at.setText(minutes == 0 ? "не выключать" : "в " + hhmm(System.currentTimeMillis() + minutes * 60_000L));
+        r.addView(at, new LinearLayout.LayoutParams(0, -2, 1f));
+        final TextView mark = text(28, MOON, Typeface.NORMAL, "sans-serif");
+        mark.setText(current ? "✓" : "");
+        r.addView(mark);
+        r.setContentDescription(label);
+        final GradientDrawable on = pill(0xedffffff, 0, 20);
+        r.setOnFocusChangeListener((x, has) -> {
+            r.setBackground(has ? on : null);
+            v.setTextColor(has ? DARK : INK);
+            at.setTextColor(has ? 0x8c0b0c10 : INK3);
+            mark.setTextColor(has ? MOON_DARK : MOON);
+        });
+        r.setOnClickListener(x -> chooseTimer(minutes));
+        return r;
+    }
+
+    private void chooseTimer(int minutes) {
+        closeMenu(true);
+        if (minutes == 0) {
+            SleepTimer.cancel(this);
+        } else if (SleepTimer.canSleep(this)) {
+            SleepTimer.set(this, minutes);
+        } else if (!getPackageManager().hasSystemFeature(PackageManager.FEATURE_DEVICE_ADMIN)) {
+            // No device admin on this firmware: the sleep service has to be switched on once.
+            toast("Включите «Кинотеатр: таймер сна» в Настройки → Специальные возможности");
+            start(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), "Специальные возможности");
+        } else {
+            // One-time system prompt: allow the launcher to turn the screen off.
+            pendingMinutes = minutes;
+            Intent i = new Intent(android.app.admin.DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN)
+                    .putExtra(android.app.admin.DevicePolicyManager.EXTRA_DEVICE_ADMIN, SleepTimer.admin(this))
+                    .putExtra(android.app.admin.DevicePolicyManager.EXTRA_ADD_EXPLANATION,
+                            "Нужно, чтобы таймер сна мог выключить телевизор. Больше это разрешение ни для чего не используется.");
+            try {
+                startActivityForResult(i, REQ_ADMIN);
+            } catch (ActivityNotFoundException e) {
+                toast("Таймер сна недоступен на этом телевизоре");
+            }
+        }
+        updateTimerButton();
+    }
+
+    @Override
+    protected void onActivityResult(int req, int res, Intent data) {
+        super.onActivityResult(req, res, data);
+        if (req == REQ_ADMIN && SleepTimer.canSleep(this) && pendingMinutes > 0) {
+            SleepTimer.set(this, pendingMinutes);
+            updateTimerButton();
+        }
+        pendingMinutes = 0;
     }
 
     // ---------------------------------------------------------------- hero, scrolling
@@ -986,6 +1299,22 @@ public class MainActivity extends Activity {
      * am start -n app.kinoteatr.launcher/.MainActivity --es city Минск --es lat 53.90 --es lon 27.56
      */
     private boolean applyConfig(Intent i) {
+        if (i != null && i.getBooleanExtra("dropAdmin", false)) {
+            // restore.sh: give up the screen-off right first, otherwise Android refuses to uninstall us.
+            SleepTimer.cancel(this);
+            android.app.admin.DevicePolicyManager dpm =
+                    (android.app.admin.DevicePolicyManager) getSystemService(Context.DEVICE_POLICY_SERVICE);
+            if (dpm != null && SleepTimer.adminActive(this)) dpm.removeActiveAdmin(SleepTimer.admin(this));
+            updateTimerButton();
+            return true;
+        }
+        if (i != null && i.hasExtra("sleepIn")) {
+            // Tests: am start ... --ei sleepIn 1 (the menu offers 15 min and up).
+            int m = i.getIntExtra("sleepIn", 0);
+            if (m > 0 && SleepTimer.canSleep(this)) SleepTimer.set(this, m); else SleepTimer.cancel(this);
+            updateTimerButton();
+            return true;
+        }
         if (i == null || !i.hasExtra("city")) return false;
         try {
             prefs.edit().putString("city", i.getStringExtra("city"))
@@ -1021,6 +1350,8 @@ public class MainActivity extends Activity {
                 long t = Math.round(cur.getDouble("temperature_2m"));
                 int code = cur.getInt("weather_code");
                 final String txt = weatherGlyph(code) + "  " + (t > 0 ? "+" : "") + t + "°  " + city;
+                // The screensaver shows the cached weather and never goes online itself.
+                prefs.edit().putString("weatherText", (t > 0 ? "+" : "") + t + "°  " + city).apply();
                 ui.post(() -> { weather.setText(txt); weather.setVisibility(View.VISIBLE); });
             } catch (Exception e) {
                 weatherAt = 0;

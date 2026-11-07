@@ -2,81 +2,84 @@ package app.kinoteatr.launcher;
 
 import android.content.Context;
 import android.graphics.Bitmap;
+import android.graphics.BitmapShader;
 import android.graphics.Canvas;
 import android.graphics.Matrix;
 import android.graphics.Paint;
-import android.graphics.PorterDuff;
-import android.graphics.PorterDuffXfermode;
 import android.graphics.RadialGradient;
-import android.graphics.Rect;
 import android.graphics.Shader;
-import android.os.SystemClock;
 import android.view.Choreographer;
 import android.view.View;
 
+import java.util.Random;
+
 /**
- * Slowly drifting colour blobs behind the home screen.
- * The blobs are soft, so they are rendered in software into a 160×90 bitmap and the GPU
- * only stretches one texture per frame. Updates run at ~30 fps during a cross-fade,
- * ~10 fps at rest, and stop completely when the launcher is paused.
+ * Backdrop: an almost black screen with one soft glow of the focused app's colour under the
+ * favourites shelf. Nothing moves; when focus changes the colour cross-fades, then it stays still.
+ *
+ * Banding fix (seen on the mini-LED panel): the glow is drawn by the GPU at full resolution
+ * (no stretched low-res bitmap), with a bell-shaped falloff instead of linear steps, dithering on,
+ * and a faint static grain on top that breaks up the 8-bit steps of the dark gradient.
  */
 public class AmbientView extends View implements Choreographer.FrameCallback {
 
-    private static final int BW = 160, BH = 90; // blobs are so soft that 160×90 stretched looks identical
+    private static final int BASE = 0xff08080b;
+    // Glow centre and radii as fractions of the screen (matches the approved mockup).
+    private static final float CX = .5f, CY = .833f, RX = .55f, RY = .35f;
+    private static final float ALPHA = .42f;
+    private static final int STOPS = 16;
 
-    // x, y, radius (fractions of width/height), drift speed x, drift speed y, phase, colour slot
-    private static final float[][] BLOBS = {
-            {.72f, .30f, .55f, .05f, .04f, 0f, 1},
-            {.92f, .62f, .45f, .04f, .06f, 2f, 2},
-            {.45f, .12f, .40f, .06f, .03f, 4f, 3},
-            {.60f, .55f, .35f, .03f, .05f, 1f, 1},
-    };
-
-    private final float[][] cur = new float[4][3];
-    private final float[][] tgt = new float[4][3];
-    private final RadialGradient[] shaders = new RadialGradient[BLOBS.length];
-    private final Paint blobPaint = new Paint();
-    private final Paint blitPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
+    private final float[] cur = new float[3];
+    private final float[] tgt = new float[3];
+    private final Paint glowPaint = new Paint(Paint.DITHER_FLAG);
+    private final Paint grainPaint = new Paint();
     private final Matrix matrix = new Matrix();
-    private final Bitmap buf = Bitmap.createBitmap(BW, BH, Bitmap.Config.ARGB_8888);
-    private final Canvas bufCanvas = new Canvas(buf);
-    private final Rect dst = new Rect();
-    private final long start = SystemClock.uptimeMillis();
-    private boolean hasColors, running, changing, shadersDirty = true;
+    private final int[] colors = new int[STOPS];
+    private final float[] positions = new float[STOPS];
+    private final float[] falloff = new float[STOPS];
+    private boolean hasColors, running, changing, looping, shaderDirty = true;
     private long lastFrameNanos;
 
     public AmbientView(Context c) {
         super(c);
-        blobPaint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.SCREEN));
-        buf.eraseColor(0xff000000);
-    }
-
-    public void setColors(int[] c) {
-        if (hasColors && same(c)) { poke(); return; } // same app again: no cross-fade to the same colour
-        for (int i = 0; i < 4; i++) {
-            tgt[i][0] = (c[i] >> 16) & 0xff;
-            tgt[i][1] = (c[i] >> 8) & 0xff;
-            tgt[i][2] = c[i] & 0xff;
-            if (!hasColors) System.arraycopy(tgt[i], 0, cur[i], 0, 3);
+        glowPaint.setDither(true);
+        // Gaussian-like bell that reaches exactly 0 at the edge: no visible rim.
+        float e = (float) Math.exp(-4);
+        for (int i = 0; i < STOPS; i++) {
+            float t = i / (float) (STOPS - 1);
+            positions[i] = t;
+            falloff[i] = ((float) Math.exp(-4 * t * t) - e) / (1 - e);
         }
-        hasColors = true;
+        // Static grain: ±3 levels of brightness, invisible as texture, enough to dissolve bands.
+        Bitmap noise = Bitmap.createBitmap(128, 128, Bitmap.Config.ARGB_8888);
+        Random r = new Random(7);
+        int[] px = new int[128 * 128];
+        for (int i = 0; i < px.length; i++) {
+            boolean light = r.nextBoolean();
+            px[i] = ((r.nextInt(7) + 2) << 24) | (light ? 0xffffff : 0);
+        }
+        noise.setPixels(px, 0, 128, 0, 0, 128, 128);
+        grainPaint.setShader(new BitmapShader(noise, Shader.TileMode.REPEAT, Shader.TileMode.REPEAT));
+    }
+
+    /** Uses the second colour of an app palette (its vivid tone) for the glow. */
+    public void setColors(int[] palette) {
+        int c = palette[1];
+        float r = (c >> 16) & 0xff, g = (c >> 8) & 0xff, b = c & 0xff;
+        if (hasColors && tgt[0] == r && tgt[1] == g && tgt[2] == b) return;
+        tgt[0] = r; tgt[1] = g; tgt[2] = b;
+        if (!hasColors) {
+            System.arraycopy(tgt, 0, cur, 0, 3);
+            hasColors = true;
+            shaderDirty = true;
+            invalidate();
+            return;
+        }
         changing = true;
-        shadersDirty = true;
-        render();
-        poke();
+        loop();
     }
 
-    private boolean same(int[] c) {
-        for (int i = 0; i < 4; i++)
-            if (tgt[i][0] != ((c[i] >> 16) & 0xff) || tgt[i][1] != ((c[i] >> 8) & 0xff) || tgt[i][2] != (c[i] & 0xff))
-                return false;
-        return true;
-    }
-
-    public void start() {
-        running = true;
-        poke();
-    }
+    public void start() { running = true; if (changing) loop(); }
 
     public void stop() {
         running = false;
@@ -84,77 +87,50 @@ public class AmbientView extends View implements Choreographer.FrameCallback {
         Choreographer.getInstance().removeFrameCallback(this);
     }
 
-    /** Keeps the backdrop moving for a while after the last remote press, then it freezes to save CPU. */
-    public void poke() {
-        awakeUntil = SystemClock.uptimeMillis() + AWAKE_MS;
+    /** Kept for callers; the backdrop doesn't drift, so there is nothing to wake. */
+    public void poke() { }
+
+    private void loop() {
         if (running && !looping) {
             looping = true;
             Choreographer.getInstance().postFrameCallback(this);
         }
     }
 
-    private static final long AWAKE_MS = 20_000;
-    private long awakeUntil;
-    private boolean looping;
-
     @Override
     public void doFrame(long now) {
-        if (!running) { looping = false; return; }
-        if (!changing && SystemClock.uptimeMillis() > awakeUntil) { looping = false; return; }
-        long minGap = changing ? 33_000_000L : 100_000_000L;
-        if (now - lastFrameNanos >= minGap) {
+        if (!running || !changing) { looping = false; return; }
+        if (now - lastFrameNanos >= 33_000_000L) {
             lastFrameNanos = now;
-            render();
+            float diff = 0;
+            for (int j = 0; j < 3; j++) {
+                float d = tgt[j] - cur[j];
+                cur[j] += d * 0.14f;
+                diff = Math.max(diff, Math.abs(d));
+            }
+            if (diff < 0.6f) { System.arraycopy(tgt, 0, cur, 0, 3); changing = false; }
+            shaderDirty = true;
+            invalidate();
         }
         Choreographer.getInstance().postFrameCallback(this);
     }
 
-    private static int rgb(float[] c, float a) {
-        return ((int) (a * 255) << 24) | ((int) c[0] << 16) | ((int) c[1] << 8) | (int) c[2];
-    }
-
-    private void render() {
-        if (!hasColors) return;
-        if (changing) {
-            float diff = 0;
-            for (int i = 0; i < 4; i++)
-                for (int j = 0; j < 3; j++) {
-                    float d = tgt[i][j] - cur[i][j];
-                    cur[i][j] += d * 0.12f;
-                    diff = Math.max(diff, Math.abs(d));
-                }
-            if (diff < 0.6f) {
-                for (int i = 0; i < 4; i++) System.arraycopy(tgt[i], 0, cur[i], 0, 3);
-                changing = false;
-            }
-            shadersDirty = true;
-        }
-        if (shadersDirty) {
-            for (int i = 0; i < BLOBS.length; i++) {
-                float[] col = cur[(int) BLOBS[i][6]];
-                shaders[i] = new RadialGradient(0, 0, BLOBS[i][2] * BW,
-                        new int[]{rgb(col, .8f), rgb(col, .26f), rgb(col, 0f)},
-                        new float[]{0f, .5f, 1f}, Shader.TileMode.CLAMP);
-            }
-            shadersDirty = false;
-        }
-        bufCanvas.drawColor(rgb(cur[0], 1f), PorterDuff.Mode.SRC);
-        float t = (SystemClock.uptimeMillis() - start) / 1000f;
-        for (int i = 0; i < BLOBS.length; i++) {
-            float[] b = BLOBS[i];
-            float x = (b[0] + (float) Math.sin(t * b[3] + b[5]) * .08f) * BW;
-            float y = (b[1] + (float) Math.cos(t * b[4] + b[5]) * .08f) * BH;
-            matrix.setTranslate(x, y);
-            shaders[i].setLocalMatrix(matrix);
-            blobPaint.setShader(shaders[i]);
-            bufCanvas.drawRect(0, 0, BW, BH, blobPaint);
-        }
-        invalidate();
-    }
-
     @Override
     protected void onDraw(Canvas canvas) {
-        dst.set(0, 0, getWidth(), getHeight());
-        canvas.drawBitmap(buf, null, dst, blitPaint);
+        int w = getWidth(), h = getHeight();
+        canvas.drawColor(BASE);
+        if (!hasColors) return;
+        if (shaderDirty) {
+            int rgb = ((int) cur[0] << 16) | ((int) cur[1] << 8) | (int) cur[2];
+            for (int i = 0; i < STOPS; i++) colors[i] = (Math.round(ALPHA * falloff[i] * 255) << 24) | rgb;
+            RadialGradient g = new RadialGradient(0, 0, 1f, colors, positions, Shader.TileMode.CLAMP);
+            matrix.setScale(RX * w, RY * h);
+            matrix.postTranslate(CX * w, CY * h);
+            g.setLocalMatrix(matrix);
+            glowPaint.setShader(g);
+            shaderDirty = false;
+        }
+        canvas.drawRect(0, 0, w, h, glowPaint);
+        canvas.drawRect(0, 0, w, h, grainPaint);
     }
 }

@@ -73,6 +73,9 @@ tv pm list packages -d | sed 's/^package://' > "$B/disabled-before.txt"
 for k in window_animation_scale transition_animation_scale animator_duration_scale auto_time auto_time_zone; do
   echo "$k=$(tv settings get global "$k")"
 done > "$B/settings-before.txt"
+for k in screensaver_components enabled_accessibility_services accessibility_enabled; do
+  echo "secure:$k=$(tv settings get secure "$k")"
+done >> "$B/settings-before.txt"
 : > "$B/disabled-by-setup.txt"
 
 step "Отключаю рекламу и телеметрию (обратимо)"
@@ -119,6 +122,36 @@ if [ -n "$CITY" ]; then
   fi
 fi
 
+step "Заставка с часами"
+printf "Поставить заставку «Кинотеатр: часы» вместо текущей? Время до её запуска не меняется. [Y/n] "
+read -r answer
+case "$answer" in
+  n|N|н|Н) echo "  Оставляю текущую заставку." ;;
+  *) tv settings put secure screensaver_components app.kinoteatr.launcher/.ClockDream; echo "  Готово." ;;
+esac
+
+step "Таймер сна"
+if [ "$(tv cmd package has-feature android.software.device_admin)" = "true" ]; then
+  # Firmware supports device admin: the narrowest right, only "turn the screen off".
+  tv dpm set-active-admin --user 0 app.kinoteatr.launcher/.AdminReceiver >/dev/null 2>&1 && echo "  Включён."
+else
+  echo "  Эта прошивка не даёт приложениям выключать телевизор обычным способом."
+  echo "  Для таймера нужна служба «Кинотеатр: таймер сна» в «Специальных возможностях»:"
+  echo "  она только выключает телевизор в выбранное время, экран не читает и ни за чем не следит."
+  printf "  Включить её? [y/N] "
+  read -r answer
+  case "$answer" in
+    y|Y|д|Д)
+      cur=$(tv settings get secure enabled_accessibility_services)
+      svc=app.kinoteatr.launcher/app.kinoteatr.launcher.SleepService
+      case "$cur" in *"$svc"*) ;; null|"") tv settings put secure enabled_accessibility_services "$svc" ;; *) tv settings put secure enabled_accessibility_services "$cur:$svc" ;; esac
+      tv settings put secure accessibility_enabled 1
+      echo "  Включена. Выключить можно в Настройки → Специальные возможности."
+      ;;
+    *) echo "  Пропускаю. Кнопка таймера сама подскажет, где включить службу." ;;
+  esac
+fi
+
 step "Делаю «Кинотеатр» главным экраном"
 tv cmd package set-home-activity app.kinoteatr.launcher/.MainActivity >/dev/null
 home() { tv cmd package resolve-activity -a android.intent.action.MAIN -c android.intent.category.HOME \
@@ -147,6 +180,6 @@ fi
 
 step "Готово"
 echo "Отключено пакетов: $(wc -l < "$B/disabled-by-setup.txt" | tr -d ' '). Резервная копия: $B"
-echo "Управление: долгое OK на плитке — меню (открыть, переместить, избранное, о приложении)."
+echo "Управление: долгое OK на плитке — меню. ☾ в ряду источников — таймер сна."
 echo "Откат всего: sh restore.sh"
 echo "После настройки выключи «Отладку по USB» в «Для разработчиков»."

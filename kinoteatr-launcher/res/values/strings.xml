@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="sleep_service_description">Только для таймера сна: в выбранное время выключает телевизор. Ничего не читает с экрана и не следит за действиями.</string>
+</resources>
