@@ -694,11 +694,15 @@ public class MainActivity extends Activity {
                 .setUpdateListener(a -> { if (v.getParent() instanceof View) ((View) v.getParent()).invalidate(); })
                 .setDuration(has ? 200 : 160).setInterpolator(new DecelerateInterpolator(2f)).start();
         if (has) {
+            // The ring reaches 2 px past the tile's rounded clip. Drawn exactly on the clip edge, its
+            // half-covered edge pixels let the banner colour show through as a thin coloured fringe
+            // outside the white; this way the clip cuts through solid white. Inner edge unchanged.
+            int out = px(2);
             GradientDrawable ring = new GradientDrawable();
-            ring.setCornerRadius(px(18));
-            ring.setStroke(px(8), Color.WHITE);
+            ring.setCornerRadius(px(18) + out);
+            ring.setStroke(px(8) + out, Color.WHITE);
             ring.setColor(Color.TRANSPARENT);
-            v.setForeground(ring);
+            v.setForeground(new android.graphics.drawable.InsetDrawable(ring, -out));
         } else {
             v.setForeground(null);
         }
