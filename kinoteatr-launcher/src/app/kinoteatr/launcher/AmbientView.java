@@ -1,8 +1,6 @@
 package app.kinoteatr.launcher;
 
 import android.content.Context;
-import android.graphics.Bitmap;
-import android.graphics.BitmapShader;
 import android.graphics.Canvas;
 import android.graphics.Matrix;
 import android.graphics.Paint;
@@ -11,19 +9,18 @@ import android.graphics.Shader;
 import android.view.Choreographer;
 import android.view.View;
 
-import java.util.Random;
 
 /**
  * Backdrop: an almost black screen with one soft glow of the focused app's colour under the
  * favourites shelf. Nothing moves; when focus changes the colour cross-fades, then it stays still.
  *
  * Banding fix (seen on the mini-LED panel): the glow is drawn by the GPU at full resolution
- * (no stretched low-res bitmap), with a bell-shaped falloff instead of linear steps, dithering on,
- * and a faint static grain on top that breaks up the 8-bit steps of the dark gradient.
+ * (no stretched low-res bitmap), with a bell-shaped falloff instead of linear steps and dithering on.
+ * No grain overlay: on the mini-LED it read as grey noise, so the black stays truly black.
  */
 public class AmbientView extends View implements Choreographer.FrameCallback {
 
-    private static final int BASE = 0xff08080b;
+    private static final int BASE = 0xff000000; // true black: on mini-LED the backlight there stays off
     // Glow centre and radii as fractions of the screen (matches the approved mockup).
     private static final float CX = .5f, CY = .833f, RX = .55f, RY = .35f;
     private static final float ALPHA = .42f;
@@ -32,7 +29,6 @@ public class AmbientView extends View implements Choreographer.FrameCallback {
     private final float[] cur = new float[3];
     private final float[] tgt = new float[3];
     private final Paint glowPaint = new Paint(Paint.DITHER_FLAG);
-    private final Paint grainPaint = new Paint();
     private final Matrix matrix = new Matrix();
     private final int[] colors = new int[STOPS];
     private final float[] positions = new float[STOPS];
@@ -50,16 +46,7 @@ public class AmbientView extends View implements Choreographer.FrameCallback {
             positions[i] = t;
             falloff[i] = ((float) Math.exp(-4 * t * t) - e) / (1 - e);
         }
-        // Static grain: ±3 levels of brightness, invisible as texture, enough to dissolve bands.
-        Bitmap noise = Bitmap.createBitmap(128, 128, Bitmap.Config.ARGB_8888);
-        Random r = new Random(7);
-        int[] px = new int[128 * 128];
-        for (int i = 0; i < px.length; i++) {
-            boolean light = r.nextBoolean();
-            px[i] = ((r.nextInt(7) + 2) << 24) | (light ? 0xffffff : 0);
-        }
-        noise.setPixels(px, 0, 128, 0, 0, 128, 128);
-        grainPaint.setShader(new BitmapShader(noise, Shader.TileMode.REPEAT, Shader.TileMode.REPEAT));
+
     }
 
     /** Uses the second colour of an app palette (its vivid tone) for the glow. */
@@ -131,6 +118,5 @@ public class AmbientView extends View implements Choreographer.FrameCallback {
             shaderDirty = false;
         }
         canvas.drawRect(0, 0, w, h, glowPaint);
-        canvas.drawRect(0, 0, w, h, grainPaint);
     }
 }

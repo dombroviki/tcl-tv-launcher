@@ -705,6 +705,7 @@ public class MainActivity extends Activity {
         Drawable cached = art.get(a.pkg);
         if (cached != null) {
             applyArt(iv, cached, artIsIcon.contains(a.pkg), h);
+            tintTile(iv, edges.get(a.pkg));
             return;
         }
         io.execute(() -> {
@@ -714,12 +715,15 @@ public class MainActivity extends Activity {
             boolean icon = d == null;
             if (icon) d = a.info.loadIcon(pm);
             int[] pal = palette.containsKey(a.pkg) ? null : extractPalette(d);
+            final int edge = icon ? 0 : edgeColor(d);
             final Drawable fd = d;
             ui.post(() -> {
                 art.put(a.pkg, fd);
                 if (icon) artIsIcon.add(a.pkg);
                 if (pal != null && !INFO.containsKey(a.pkg)) palette.put(a.pkg, pal);
+                edges.put(a.pkg, edge);
                 applyArt(iv, fd, icon, h);
+                tintTile(iv, edge);
                 if (("app:" + a.pkg).equals(focusedKey)) ambient.setColors(colorsFor(a.pkg));
             });
         });
@@ -735,6 +739,34 @@ public class MainActivity extends Activity {
         } else {
             iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
             iv.setPadding(0, 0, 0, 0);
+        }
+    }
+
+    private final Map<String, Integer> edges = new HashMap<>();
+
+    /**
+     * Some banners have their own rounded or transparent corners; the tile underneath shows
+     * through them as a dark notch inside the focus ring. Filling the tile with the banner's own
+     * edge colour hides that.
+     */
+    private void tintTile(ImageView iv, Integer edge) {
+        if (edge == null || edge == 0 || !(iv.getParent() instanceof View)) return;
+        ((View) iv.getParent()).setBackground(pill(edge, 0, 18));
+    }
+
+    /** Opaque colour along the banner's left edge (middle), or 0 if the edge is transparent. */
+    private static int edgeColor(Drawable src) {
+        try {
+            Drawable d = src.getConstantState() != null ? src.getConstantState().newDrawable().mutate() : src;
+            Bitmap bm = Bitmap.createBitmap(64, 36, Bitmap.Config.ARGB_8888);
+            d.setBounds(0, 0, 64, 36);
+            d.draw(new Canvas(bm));
+            int[] probes = {bm.getPixel(4, 18), bm.getPixel(60, 18), bm.getPixel(32, 3), bm.getPixel(32, 33)};
+            bm.recycle();
+            for (int p : probes) if (Color.alpha(p) > 240) return p | 0xff000000;
+            return 0;
+        } catch (Throwable t) {
+            return 0;
         }
     }
 
@@ -817,35 +849,29 @@ public class MainActivity extends Activity {
 
     private static final int MOON = 0xffc9b8ff, MOON_DARK = 0xff5b3df5, DARK = 0xff0b0c10;
     private LinearLayout inputsInner;
-    private android.widget.HorizontalScrollView inputsScroll;
     private LinearLayout timerBtn;
     private TextView timerText;
 
     /**
      * Source row: inputs on the left (names and hidden flags come from the TV's own input menu),
      * then two round buttons pinned to the right edge — sleep timer and settings.
-     * If there are more inputs than fit, the inputs scroll sideways with focus.
-     */
+         */
     private void rebuildInputs() {
         String keep = focusedKey;
         inputs.removeAllViews();
         inputs.addView(label("Источники"), new LinearLayout.LayoutParams(-2, -2));
 
-        inputsScroll = new android.widget.HorizontalScrollView(this);
-        inputsScroll.setHorizontalScrollBarEnabled(false);
-        inputsScroll.setClipToPadding(false);
-        // Room above and below so the focused pill's zoom and shadow aren't cut by the scroll view.
-        int pad = px(34);
-        inputsScroll.setPadding(px(14), pad, px(14), pad);
+        // No scroll container: it clipped the zoomed pill's corners. A TV has a handful of inputs,
+        // and hidden ones (from the TV's own input menu) are left out anyway.
         ShadowLayout inner = new ShadowLayout(this);
         inner.shadowAll(pillShadow());
         inner.setGravity(Gravity.CENTER_VERTICAL);
+        inner.setClipChildren(false);
+        inner.setClipToPadding(false);
         inputsInner = inner;
-        inputsScroll.addView(inner, new FrameLayout.LayoutParams(-2, -2));
         LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(0, -2, 1f);
-        slp.leftMargin = px(22);
-        slp.topMargin = slp.bottomMargin = -pad;
-        inputs.addView(inputsScroll, slp);
+        slp.leftMargin = px(36);
+        inputs.addView(inner, slp);
 
         TvInputManager tim = (TvInputManager) getSystemService(Context.TV_INPUT_SERVICE);
         List<TvInputInfo> hdmi = new ArrayList<>();
@@ -1065,7 +1091,8 @@ public class MainActivity extends Activity {
 
         LinearLayout sheet = new LinearLayout(this);
         sheet.setOrientation(LinearLayout.VERTICAL);
-        sheet.setPadding(px(64), px(72), px(64), 0);
+        sheet.setPadding(px(64), px(48), px(64), px(48));
+        sheet.setGravity(Gravity.CENTER_VERTICAL); // content centred top to bottom
         sheet.setBackgroundColor(0xff14151c); // opaque: tiles must not show through the rows
 
         LinearLayout eb = new LinearLayout(this);
@@ -1091,7 +1118,8 @@ public class MainActivity extends Activity {
         hp.bottomMargin = px(22);
         sheet.addView(h, hp);
 
-        sheet.addView(timerState(), new LinearLayout.LayoutParams(-1, -2));
+        View state = timerState();
+        if (state != null) sheet.addView(state, new LinearLayout.LayoutParams(-1, -2));
 
         int chosen = SleepTimer.chosenMinutes(this);
         List<View> rows = new ArrayList<>();
@@ -1124,17 +1152,14 @@ public class MainActivity extends Activity {
         lower.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
     }
 
-    /** "Выключится в 22:12 / осталось 25 мин из 45" with a countdown bar, or "Таймер не установлен". */
+    /** "Выключится в 22:12 / осталось 25 мин из 45" with a countdown bar; nothing while no timer runs. */
     private View timerState() {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(px(28), px(24), px(28), px(24));
         long left = SleepTimer.left(this);
         if (left <= 0) {
-            box.setBackground(pill(0x0dffffff, 0x1fffffff, 20));
-            TextView t = text(28, INK3, Typeface.NORMAL, "sans-serif");
-            t.setText("Таймер не установлен");
-            box.addView(t);
+            return null;
         } else {
             box.setBackground(pill(0x14c9b8ff, 0x38c9b8ff, 20));
             int total = SleepTimer.chosenMinutes(this);
@@ -1199,6 +1224,7 @@ public class MainActivity extends Activity {
 
     private void chooseTimer(int minutes) {
         closeMenu(true);
+        if (minutes > 0 && !SleepTimer.canSleep(this)) SleepService.ensureEnabled(this);
         if (minutes == 0) {
             SleepTimer.cancel(this);
         } else if (SleepTimer.canSleep(this)) {
@@ -1311,6 +1337,7 @@ public class MainActivity extends Activity {
         if (i != null && i.hasExtra("sleepIn")) {
             // Tests: am start ... --ei sleepIn 1 (the menu offers 15 min and up).
             int m = i.getIntExtra("sleepIn", 0);
+            if (m > 0 && !SleepTimer.canSleep(this)) SleepService.ensureEnabled(this); // same path as the menu
             if (m > 0 && SleepTimer.canSleep(this)) SleepTimer.set(this, m); else SleepTimer.cancel(this);
             updateTimerButton();
             return true;

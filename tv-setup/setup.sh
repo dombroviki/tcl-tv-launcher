@@ -146,6 +146,9 @@ else
       svc=app.kinoteatr.launcher/app.kinoteatr.launcher.SleepService
       case "$cur" in *"$svc"*) ;; null|"") tv settings put secure enabled_accessibility_services "$svc" ;; *) tv settings put secure enabled_accessibility_services "$cur:$svc" ;; esac
       tv settings put secure accessibility_enabled 1
+      # Some firmware (TCL) switches accessibility services off; this lets the launcher turn
+      # its own service back on when a timer is chosen. It changes nothing else.
+      tv pm grant app.kinoteatr.launcher android.permission.WRITE_SECURE_SETTINGS >/dev/null 2>&1
       echo "  Включена. Выключить можно в Настройки → Специальные возможности."
       ;;
     *) echo "  Пропускаю. Кнопка таймера сама подскажет, где включить службу." ;;

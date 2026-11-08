@@ -4,6 +4,9 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+    <!-- Granted only by hand over adb (setup.sh asks first): lets the sleep timer switch its
+         accessibility service back on after TCL firmware turns it off at boot. -->
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" />
 
     <uses-feature android:name="android.software.leanback" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
