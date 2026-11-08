@@ -40,14 +40,22 @@ stays_put(){ # $1 = where; remaining args = keys to get there. Screen must not m
   fresh; for k in "$@"; do $S input keyevent "$k"; done; sleep 1.2
   f0=$(fbox); d=$(echo "$f0" | grep -oE 'content-desc="[^"]+"' | sed 's/content-desc="//;s/"$//'); b0=$(echo "$f0" | grep -oE 'bounds="[^"]+"')
   long; b=$(where "$d")
-  ok "$name ($d): screen stays while menu is open" "$( [ "$(center "$b")" = "$(center "$b0")" ] && echo 1)" "centre $(center "$b0") -> $(center "$b")"
+  # y must match exactly (the screen scrolls vertically); x may differ by a few px because the
+  # accessibility bounds of a zoomed tile in the first column are clipped at the row's edge.
+  c0=$(center "$b0"); c1=$(center "$b")
+  ok "$name ($d): screen stays while menu is open" "$( [ "${c0#*,}" = "${c1#*,}" ] && dx=$(( ${c0%,*} - ${c1%,*} )) && [ ${dx#-} -le 8 ] && echo 1)" "centre $c0 -> $c1"
   key KEYCODE_BACK; sleep .6; f=$(fbox)
   ok "$name ($d): Back returns focus to same tile, same place" "$( [ "$f" = "$f0" ] && echo 1)" "$f0 -> $f"
   long; menu_pick "О приложении"; sleep 2.5; a=$(top)
   key KEYCODE_BACK; sleep 1.5; f=$(fbox)
   ok "$name ($d): 'О приложении' and back keeps place" "$(echo "$a" | grep -q settings && [ "$f" = "$f0" ] && echo 1)" "opened=$a; $f0 -> $f"
 }
-$S input keyevent KEYCODE_WAKEUP; $S logcat -c; $S pm clear app.kinoteatr.launcher >/dev/null
+$S input keyevent KEYCODE_WAKEUP
+# Remember the user's own favourites and city (the run resets them), put them back at the end.
+$S am force-stop app.kinoteatr.launcher; $S logcat -c; $S am start -W -n app.kinoteatr.launcher/.MainActivity >/dev/null; sleep 1
+STATE=$($S logcat -d -s Kinoteatr:V | grep -m1 "state:" | sed 's/.*state: //' | tr -d '\r')
+echo "      saved: $STATE"
+$S logcat -c; $S pm clear app.kinoteatr.launcher >/dev/null
 
 fresh; f=$(focused); ok "cold start focuses first favourite" "$(echo "$f" | grep -qi Lampa && echo 1)" "$f"
 key KEYCODE_DPAD_RIGHT; f=$(focused); ok "right moves to SmartTube" "$(echo "$f" | grep -q SmartTube && echo 1)" "$f"
@@ -136,7 +144,98 @@ sleep 2; after=$($S dumpsys meminfo app.kinoteatr.launcher | grep -m1 'TOTAL PSS
 ok "memory stable after 150 key presses ($before -> $after KB)" "$( [ $((after - before)) -lt 8000 ] && echo 1)" "grew $((after-before)) KB"
 t=$(tops); ok "favourites aligned after navigation" "$( [ $(echo $t | wc -w) = 1 ] && echo 1)" "tops: $t"
 
-$S dumpsys gfxinfo app.kinoteatr.launcher reset >/dev/null
+
+# --- inputs: hidden ones stay hidden, switching really changes the active input (TCL)
+fresh; d=$(dump)
+hid=$($S settings get secure tv_input_hidden_inputs | tr -d '\r')
+for pair in 1413744384:2 1413744640:3 1413745664:4; do
+  hw=${pair%%:*}; n=${pair##*:}
+  if echo "$hid" | grep -q "$hw"; then
+    ok "HDMI $n is hidden in the TV menu, so it is not in the row" "$(echo "$d" | grep -q "HDMI $n" || echo 1)" "found HDMI $n"
+  fi
+done
+if [ -n "$($S getprop persist.sys.curInput | tr -d '\r')" ]; then
+  key KEYCODE_DPAD_DOWN; for i in 1 2 3 4; do f=$(focused); echo "$f" | grep -q 'Эфир' && break; $S input keyevent KEYCODE_DPAD_RIGHT; sleep .3; done
+  key KEYCODE_DPAD_CENTER; sleep 4; cur=$($S getprop persist.sys.curInput | tr -d '\r')
+  ok "'Эфир' switches the TV to the tuner" "$(echo "$cur" | grep -q TDTVInputService && echo 1)" "$cur"
+  fresh; key KEYCODE_DPAD_DOWN; for i in 1 2 3 4; do $S input keyevent KEYCODE_DPAD_LEFT; done; sleep .5
+  key KEYCODE_DPAD_CENTER; sleep 4; cur2=$($S getprop persist.sys.curInput | tr -d '\r')
+  ok "first input switches back to HDMI" "$(echo "$cur2" | grep -q PassThrough && [ "$cur2" != "$cur" ] && echo 1)" "$cur2"
+  $S input keyevent KEYCODE_HOME; sleep 1.5
+fi
+
+# --- round buttons: exact circles while no timer runs
+to_timer(){ key KEYCODE_DPAD_DOWN; for i in 1 2 3 4 5 6 7 8; do f=$(focused); echo "$f" | grep -q 'Таймер сна' && return 0; $S input keyevent KEYCODE_DPAD_RIGHT; sleep .3; done; return 1; }
+square(){ b=$(dump | grep "content-desc=\"$1\"" | grep -oE '\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]' | head -1 | grep -oE '[0-9]+' | tr '\n' ' ')
+  set -- $b; [ -n "$4" ] && [ $(( ($3-$1) - ($4-$2) )) -ge -2 ] && [ $(( ($3-$1) - ($4-$2) )) -le 2 ]; }
+fresh; $S am start -n app.kinoteatr.launcher/.MainActivity --ei sleepIn 0 >/dev/null 2>&1; sleep 1
+ok "timer button is a circle while idle" "$(square 'Таймер сна' && echo 1)" "not square"
+ok "settings button is a circle" "$(square 'Настройки' && echo 1)" "not square"
+
+# --- timer sheet: focus stays inside, Back returns to the button
+fresh; to_timer; key KEYCODE_DPAD_CENTER; sleep .8
+okk=1; for i in 1 2 3 4 5 6 7 8 9 10; do $S input keyevent KEYCODE_DPAD_DOWN; sleep .2; done; f=$(focused)
+echo "$f" | grep -q '2 часа' || okk=0
+ok "10x down in the timer sheet stays on the last row" "$( [ $okk = 1 ] && echo 1)" "$f"
+$S input keyevent KEYCODE_DPAD_LEFT KEYCODE_DPAD_RIGHT; sleep .4; f=$(focused)
+ok "left/right stay in the sheet" "$(echo "$f" | grep -qE 'мин|час|Выкл' && echo 1)" "$f"
+key KEYCODE_BACK; f=$(focused)
+ok "Back closes the sheet onto the timer button" "$(echo "$f" | grep -q 'Таймер сна' && echo 1)" "$f"
+
+# --- timer: set from the remote, then switch off — it must really be off
+alarms(){ $S dumpsys alarm | grep -c "app.kinoteatr.launcher"; }
+fresh; to_timer; key KEYCODE_DPAD_CENTER; sleep .8; menu_pick "15 мин"; sleep 1
+ok "choosing 15 min schedules the sleep alarm" "$( [ "$(alarms)" -ge 1 ] && echo 1)" "no alarm"
+ok "button shows the minutes left" "$(dump | grep -qE 'text="1[45] мин"' && echo 1)" "no label"
+# Home (not fresh: force-stop would drop the alarm by itself and hide a broken 'Выкл')
+$S input keyevent KEYCODE_HOME; sleep 1.5
+to_timer; key KEYCODE_DPAD_CENTER; sleep .8
+for i in 1 2 3 4 5 6 7; do $S input keyevent KEYCODE_DPAD_UP; sleep .2; done; key KEYCODE_DPAD_CENTER; sleep 1
+ok "'Выкл' removes the sleep alarm" "$( [ "$(alarms)" = 0 ] && echo 1)" "$(alarms) alarm lines left"
+ok "button is a circle again after 'Выкл'" "$(square 'Таймер сна' && echo 1)" "not square"
+# real check: a 1-minute timer, cancelled, must not turn the TV off
+fresh; $S am start -n app.kinoteatr.launcher/.MainActivity --ei sleepIn 1 >/dev/null 2>&1; sleep 2
+ok "1-minute timer is armed before the cancel" "$( [ "$(alarms)" -ge 1 ] && echo 1)" "no alarm"
+to_timer; key KEYCODE_DPAD_CENTER; sleep .8
+for i in 1 2 3 4 5 6 7; do $S input keyevent KEYCODE_DPAD_UP; sleep .2; done; key KEYCODE_DPAD_CENTER; sleep 1
+ok "remote 'Выкл' cleared the 1-minute alarm" "$( [ "$(alarms)" = 0 ] && echo 1)" "alarm still there"
+echo "      waiting 75 s: a cancelled 1-minute timer must not turn the TV off..."; sleep 75
+w=$($S dumpsys power | grep -m1 mWakefulness= | tr -d '\r ')
+ok "cancelled timer did not turn the TV off" "$(echo "$w" | grep -q Awake && echo 1)" "$w"
+
+# --- screensaver: ours, closes on any key, back to home
+for n in 1 2 3; do
+  fresh; $S am start -a com.google.android.pano.action.SLEEP >/dev/null 2>&1; sleep 3
+  d=$($S dumpsys dreams | grep -m1 mCurrentDreamName | tr -d '\r')
+  [ $n = 1 ] && ok "screensaver is 'Кинотеатр: часы'" "$(echo "$d" | grep -q ClockDream && echo 1)" "$d"
+  key KEYCODE_DPAD_UP; sleep 1.2
+done
+ok "any key closes the screensaver back to the launcher" "$(top | grep -q kinoteatr && echo 1)" "$(top)"
+
+# --- memory: sheet, screensaver and the sleep service must not pile up
+fresh
+for i in $(seq 1 10); do $S input keyevent KEYCODE_DPAD_RIGHT KEYCODE_DPAD_RIGHT KEYCODE_DPAD_DOWN KEYCODE_DPAD_DOWN KEYCODE_DPAD_UP KEYCODE_DPAD_UP KEYCODE_DPAD_LEFT KEYCODE_DPAD_LEFT; done; sleep 2
+# Warm-up first: the first Home press after a cold start makes Android add a frame buffer and fill
+# its render caches (~+20 MB, once). A leak is growth *after* that, on repeats.
+to_timer >/dev/null; $S input keyevent KEYCODE_DPAD_CENTER; sleep .5; $S input keyevent KEYCODE_BACK; sleep .3; $S input keyevent KEYCODE_HOME; sleep 1
+$S am start -a com.google.android.pano.action.SLEEP >/dev/null 2>&1; sleep 2; $S input keyevent KEYCODE_DPAD_UP; sleep 4
+m0=$($S dumpsys meminfo app.kinoteatr.launcher | grep -m1 'TOTAL PSS' | awk '{print $3}')
+for i in $(seq 1 15); do to_timer >/dev/null; $S input keyevent KEYCODE_DPAD_CENTER; sleep .5; $S input keyevent KEYCODE_BACK; sleep .3; $S input keyevent KEYCODE_HOME; sleep .3; done
+for i in 1 2 3 4 5; do $S am start -a com.google.android.pano.action.SLEEP >/dev/null 2>&1; sleep 2; $S input keyevent KEYCODE_DPAD_UP; sleep 1; done
+sleep 2; m1=$($S dumpsys meminfo app.kinoteatr.launcher | grep -m1 'TOTAL PSS' | awk '{print $3}')
+ok "memory stable after 15 timer sheets + 5 screensavers ($m0 -> $m1 KB)" "$( [ $((m1 - m0)) -lt 8000 ] && echo 1)" "grew $((m1-m0)) KB"
+procs=$($S ps -A -o NAME | grep -c kinoteatr)
+ok "sleep service and screensaver run inside the launcher process (no extra processes)" "$( [ "$procs" = 1 ] && echo 1)" "$procs processes"
+echo "      launcher memory: $((m1 / 1024)) MB PSS"
+
+# --- speed
+t1=0; for i in 1 2 3; do $S am force-stop app.kinoteatr.launcher; t=$($S am start -W -n app.kinoteatr.launcher/.MainActivity | grep TotalTime | tr -dc '0-9'); t1=$((t1 + t)); sleep 1; done
+echo "      cold start: $((t1 / 3)) ms (average of 3)"
+fresh; $S dumpsys gfxinfo app.kinoteatr.launcher reset >/dev/null
+for i in 1 2 3 4 5; do to_timer >/dev/null; $S input keyevent KEYCODE_DPAD_CENTER; sleep .6; $S input keyevent KEYCODE_BACK; sleep .4; $S input keyevent KEYCODE_HOME; sleep .4; done
+echo "      timer sheet open/close: $($S dumpsys gfxinfo app.kinoteatr.launcher | grep -E 'Janky frames|90th percentile' | tr -d '\r' | tr '\n' ' ')"
+
+fresh; $S dumpsys gfxinfo app.kinoteatr.launcher reset >/dev/null
 for i in $(seq 1 10); do $S input keyevent KEYCODE_DPAD_RIGHT KEYCODE_DPAD_LEFT; done; sleep 1
 $S dumpsys gfxinfo app.kinoteatr.launcher | grep -E "Total frames|Janky frames|90th percentile" | sed 's/^/      /'
 
@@ -146,5 +245,13 @@ echo "      idle CPU on home screen after 25 s: ${cpu}%"
 
 crash=$($S logcat -d -b crash | grep -c kinoteatr)
 ok "no crashes in log" "$( [ "$crash" = "0" ] && echo 1)" "$crash crash lines"
-$S pm clear app.kinoteatr.launcher >/dev/null; $S am start -n app.kinoteatr.launcher/.MainActivity >/dev/null  # leave default favourites
+# Put the user's state back: favourites, weather city, the sleep-service permission.
+$S pm clear app.kinoteatr.launcher >/dev/null
+FAV=$(echo "$STATE" | sed -n 's/.*fav=\([^|]*\).*/\1/p'); CITY=$(echo "$STATE" | sed -n 's/.*city=\([^|]*\).*/\1/p')
+LAT=$(echo "$STATE" | sed -n 's/.*lat=\([^|]*\).*/\1/p'); LON=$(echo "$STATE" | sed -n 's/.*lon=\([^|]*\).*/\1/p')
+$S pm grant app.kinoteatr.launcher android.permission.WRITE_SECURE_SETTINGS >/dev/null 2>&1
+[ -n "$FAV" ] && $S am start -W -n app.kinoteatr.launcher/.MainActivity --es favs "$FAV" >/dev/null 2>&1
+[ -n "$CITY" ] && $S am start -n app.kinoteatr.launcher/.MainActivity --es city "'$CITY'" --es lat "$LAT" --es lon "$LON" >/dev/null 2>&1
+sleep 1; $S input keyevent KEYCODE_HOME
+echo "      restored: fav=${FAV:-default} city=${CITY:-default}"
 echo "passed $pass, failed $fail"

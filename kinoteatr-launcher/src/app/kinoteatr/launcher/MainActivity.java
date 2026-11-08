@@ -136,6 +136,9 @@ public class MainActivity extends Activity {
         loadApps();
         rebuildRows(null);
         applyConfig(getIntent());
+        // One line for test.sh, so it can put the user's own favourites and city back after a run.
+        android.util.Log.v("Kinoteatr", "state: fav=" + prefs.getString("fav", "") + "|city=" + prefs.getString("city", "")
+                + "|lat=" + prefs.getFloat("lat", 53.90f) + "|lon=" + prefs.getFloat("lon", 27.56f));
         tickClock();
 
         IntentFilter time = new IntentFilter();
@@ -582,7 +585,7 @@ public class MainActivity extends Activity {
         menuLayer.setAlpha(0f);
         panel.setScaleX(.96f);
         panel.setScaleY(.96f);
-        menuLayer.animate().alpha(1f).setDuration(140).start();
+        menuLayer.animate().alpha(1f).setDuration(140).withLayer().start(); // layer only while fading, then freed
         panel.animate().scaleX(1f).scaleY(1f).setDuration(180).setInterpolator(new DecelerateInterpolator(2f)).start();
         first.requestFocus();
         // Everything behind the menu is out of reach for the remote until the menu closes.
@@ -856,7 +859,30 @@ public class MainActivity extends Activity {
      * Source row: inputs on the left (names and hidden flags come from the TV's own input menu),
      * then two round buttons pinned to the right edge — sleep timer and settings.
          */
+    private String inputsSig; // what the inputs row was last built from
+
     private void rebuildInputs() {
+        TvInputManager tim = (TvInputManager) getSystemService(Context.TV_INPUT_SERVICE);
+        List<TvInputInfo> hdmi = new ArrayList<>();
+        TvInputInfo tuner = null;
+        if (tim != null) {
+            for (TvInputInfo info : tim.getTvInputList()) {
+                if (info.isHidden(this)) continue; // hidden in the TV's own input menu
+                if (info.getType() == TvInputInfo.TYPE_HDMI && info.isPassthroughInput()) hdmi.add(info);
+                else if (info.getType() == TvInputInfo.TYPE_TUNER && tuner == null
+                        && info.getServiceInfo().packageName.startsWith("com.tcl")) tuner = info;
+            }
+        }
+        // Hardware ids grow with the port number on this TV, so sorting by id gives HDMI 1, 2, 3, 4.
+        hdmi.sort((x, y) -> x.getId().compareTo(y.getId()));
+        // Runs on every resume (each Home press). Rebuilding the row each time re-baked its shadows
+        // and briefly took ~20 MB; now it is rebuilt only when inputs were hidden, renamed or added.
+        StringBuilder sig = new StringBuilder();
+        for (TvInputInfo info : hdmi) sig.append(info.getId()).append('=').append(info.loadCustomLabel(this)).append(';');
+        if (tuner != null) sig.append(tuner.getId());
+        if (sig.toString().equals(inputsSig) && inputsInner != null) { updateTimerButton(); return; }
+        inputsSig = sig.toString();
+
         String keep = focusedKey;
         inputs.removeAllViews();
         inputs.addView(label("Источники"), new LinearLayout.LayoutParams(-2, -2));
@@ -873,19 +899,6 @@ public class MainActivity extends Activity {
         slp.leftMargin = px(36);
         inputs.addView(inner, slp);
 
-        TvInputManager tim = (TvInputManager) getSystemService(Context.TV_INPUT_SERVICE);
-        List<TvInputInfo> hdmi = new ArrayList<>();
-        TvInputInfo tuner = null;
-        if (tim != null) {
-            for (TvInputInfo info : tim.getTvInputList()) {
-                if (info.isHidden(this)) continue; // hidden in the TV's own input menu
-                if (info.getType() == TvInputInfo.TYPE_HDMI && info.isPassthroughInput()) hdmi.add(info);
-                else if (info.getType() == TvInputInfo.TYPE_TUNER && tuner == null
-                        && info.getServiceInfo().packageName.startsWith("com.tcl")) tuner = info;
-            }
-        }
-        // Hardware ids grow with the port number on this TV, so sorting by id gives HDMI 1, 2, 3, 4.
-        hdmi.sort((x, y) -> x.getId().compareTo(y.getId()));
         // No "connected" badge: this TV reports the same state for every port and sees no CEC devices,
         // so any connected/disconnected hint would be a guess.
         for (final TvInputInfo info : hdmi) {
@@ -1146,7 +1159,7 @@ public class MainActivity extends Activity {
         root.addView(menuLayer, new FrameLayout.LayoutParams(-1, -1));
         sheet.setTranslationX(px(80));
         menuLayer.setAlpha(0f);
-        menuLayer.animate().alpha(1f).setDuration(160).start();
+        menuLayer.animate().alpha(1f).setDuration(160).withLayer().start(); // layer only while fading, then freed
         sheet.animate().translationX(0).setDuration(220).setInterpolator(new DecelerateInterpolator(2f)).start();
         if (focusFirst != null) focusFirst.requestFocus();
         lower.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
@@ -1325,6 +1338,13 @@ public class MainActivity extends Activity {
      * am start -n app.kinoteatr.launcher/.MainActivity --es city Минск --es lat 53.90 --es lon 27.56
      */
     private boolean applyConfig(Intent i) {
+        boolean handled = false;
+        if (i != null && i.hasExtra("favs")) {
+            // test.sh restores the user's favourites after a run: --es favs pkg1,pkg2,...
+            prefs.edit().putString("fav", i.getStringExtra("favs")).apply();
+            rebuildRows(null);
+            handled = true;
+        }
         if (i != null && i.getBooleanExtra("dropAdmin", false)) {
             // restore.sh: give up the screen-off right first, otherwise Android refuses to uninstall us.
             SleepTimer.cancel(this);
@@ -1342,7 +1362,7 @@ public class MainActivity extends Activity {
             updateTimerButton();
             return true;
         }
-        if (i == null || !i.hasExtra("city")) return false;
+        if (i == null || !i.hasExtra("city")) return handled;
         try {
             prefs.edit().putString("city", i.getStringExtra("city"))
                     .putFloat("lat", Float.parseFloat(i.getStringExtra("lat")))
