@@ -49,7 +49,7 @@ public class SleepTimer extends BroadcastReceiver {
         long at = SystemClock.elapsedRealtime() + minutes * 60_000L;
         AlarmManager am = (AlarmManager) c.getSystemService(Context.ALARM_SERVICE);
         am.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, at, pending(c));
-        prefs(c).edit().putLong("at", at).putInt("minutes", minutes)
+        prefs(c).edit().putLong("at", at).putInt("minutes", minutes).putInt("boot", bootCount(c))
                 .putLong("wallAt", System.currentTimeMillis() + minutes * 60_000L).apply();
     }
 
@@ -61,11 +61,23 @@ public class SleepTimer extends BroadcastReceiver {
 
     /** Milliseconds left, or 0 when no timer is running. */
     static long left(Context c) {
-        long at = prefs(c).getLong("at", 0);
+        SharedPreferences p = prefs(c);
+        long at = p.getLong("at", 0);
+        if (at == 0) return 0;
         long left = at - SystemClock.elapsedRealtime();
-        // A saved time from before a reboot lies in the past or far in the future: treat it as off.
-        if (at == 0 || left <= 0 || left > 3 * 3600_000L) return 0;
+        // A reboot wipes the alarm but not these prefs, and the elapsed clock restarts from zero, so
+        // an old "at" can look like a live timer ("116 мин из 45"). Saved from another boot, already
+        // past on the wall clock, or out of range: the timer is off, and the leftovers are dropped.
+        boolean stale = p.getInt("boot", -1) != bootCount(c)
+                || p.getLong("wallAt", 0) < System.currentTimeMillis()
+                || left <= 0 || left > p.getInt("minutes", 0) * 60_000L + 60_000L;
+        if (stale) { p.edit().clear().apply(); return 0; }
         return left;
+    }
+
+    /** Increases with every boot of the TV; -1 if the firmware doesn't keep it. */
+    private static int bootCount(Context c) {
+        return android.provider.Settings.Global.getInt(c.getContentResolver(), android.provider.Settings.Global.BOOT_COUNT, -1);
     }
 
     static int chosenMinutes(Context c) {
